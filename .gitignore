@@ -1,0 +1,28 @@
+# build
+*.o
+dem3d_cuda
+
+# DEM outputs (large)
+output.dat
+out2.dat
+energy.dat
+cont.dat
+cont2.dat
+cont3.dat
+f-d_curve.dat
+info.dat
+new_in_gm.dat
+new_in_bc.dat
+new_in_cf.dat
+
+# inputs are usually large too; track them deliberately if you want to
+in_gm.dat
+in_cf.dat
+!cases/**/in_gm.dat
+!cases/**/in_cf.dat
+
+# local
+.DS_Store
+.idea/
+cmake-build-*/
+runs/
