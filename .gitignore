@@ -26,3 +26,7 @@ in_cf.dat
 .idea/
 cmake-build-*/
 runs/
+
+# macOS AppleDouble metadata
+._*
+.AppleDouble
