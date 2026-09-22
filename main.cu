@@ -426,11 +426,27 @@ int main(int argc, char **argv) {
                 CUDA_CHECK(cudaMemcpy(ss.grain.gcy, gpu.d_gcy, sizeof(double)*ng, cudaMemcpyDeviceToHost));
                 CUDA_CHECK(cudaMemcpy(ss.grain.gcz, gpu.d_gcz, sizeof(double)*ng, cudaMemcpyDeviceToHost));
             }
+            // FIX 7: write all 14 columns, as the Fortran does.  In the Fortran the
+            // second write statement looks commented out, but its continuation
+            // lines are live and attach to the first write (format 617 has 12
+            // reals), so f-d_curve.dat also carries the moments and the global
+            // angular velocities.  The port had dropped them.
+            //   istep grain  Fx x  Fy y  Fz z  Mx wx  My wy  Mz wz
             for (int lp = 0; lp < ss.bc.nloadp; lp++) {
                 int k = ss.bc.loadp[lp] - 1; // convert to 0-based
-                fprintf(f_fd, " %7d %7d %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e\n",
-                        istep, k+1, gf[k*6], ss.grain.gcx[k],
-                        gf[k*6+1], ss.grain.gcy[k], gf[k*6+2], ss.grain.gcz[k]);
+                double wv[3];
+                CUDA_CHECK(cudaMemcpy(&wv[0], gpu.d_vgwx + k, sizeof(double), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(&wv[1], gpu.d_vgwy + k, sizeof(double), cudaMemcpyDeviceToHost));
+                CUDA_CHECK(cudaMemcpy(&wv[2], gpu.d_vgwz + k, sizeof(double), cudaMemcpyDeviceToHost));
+                fprintf(f_fd, " %7d %7d %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e"
+                              " %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e\n",
+                        istep, k+1,
+                        gf[k*6+0], ss.grain.gcx[k],
+                        gf[k*6+1], ss.grain.gcy[k],
+                        gf[k*6+2], ss.grain.gcz[k],
+                        gf[k*6+3], wv[0],
+                        gf[k*6+4], wv[1],
+                        gf[k*6+5], wv[2]);
             }
             delete[] gf;
             fflush(f_fd);
