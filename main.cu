@@ -124,6 +124,7 @@ int main(int argc, char **argv) {
     // [4] TIME STEPPING LOOP
     // ============================================================
     for (int istep = 1; istep <= ss.bc.nstep; istep++) {
+        ss.istep_cur = istep;
         if (istep % ss.bc.nprn1 == 0 || istep == 1)
             printf("%d/%d\n", istep + ss.bc.iloop, ss.bc.nstep + ss.bc.iloop);
 

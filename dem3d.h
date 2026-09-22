@@ -242,6 +242,7 @@ struct SimState {
     int    mode1;             // stabilization mode
     int    nkk1, nkk2;       // friction energy grouping
     int    ncont;             // contact count
+    int    istep_cur;         // current step (used when writing restart files)
 
     // Derived quantities
     double avvol, avrho, gmmin;

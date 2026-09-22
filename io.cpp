@@ -455,15 +455,20 @@ void modify_positions_periodic(SimState &ss) {
 // ============================================================
 // Write new_in_gm.dat — matches Fortran output subroutine
 // ============================================================
+// FIX 5: restart files are written with full double precision (%.17g).
+// Previously positions used %e (7 significant digits): a coordinate of
+// ~338 mm was rounded to 1e-4 mm, i.e. 3-6% of a typical 1.6e-3 mm contact
+// overlap, so every restart jolted all contact forces.  The Fortran writes
+// full precision (list-directed), so this was a port-only error.
 void write_new_in_gm(SimState &ss) {
     FILE *fp = fopen("new_in_gm.dat", "w");
     if (!fp) return;
 
-    fprintf(fp, " %13.6e %13.6e %13.6e %13.6e\n",
+    fprintf(fp, " %.17g %.17g %.17g %.17g\n",
             ss.dtime, ss.gx, ss.gy, ss.gz);
     fprintf(fp, " %d\n", ss.mat.nmater);
     for (int i = 0; i < ss.mat.nmater; i++) {
-        fprintf(fp, " %11.5e %11.5e %11.5e %11.5e %11.5e %11.5e\n",
+        fprintf(fp, " %.17g %.17g %.17g %.17g %.17g %.17g\n",
                 ss.mat.rho[i], ss.mat.akn[i], ss.mat.aks[i],
                 ss.mat.cn[i], ss.mat.cs[i], ss.mat.phimu[i]);
     }
@@ -473,15 +478,15 @@ void write_new_in_gm(SimState &ss) {
     int icr = 0;
     for (int k = 0; k < ss.grain.nptotl; k++) {
         fprintf(fp, " %d %d %d\n", k+1, ss.elem.nm[icr]+1, ss.grain.nset[k]);
-        fprintf(fp, " %13.6e %13.6e %13.6e %13.6e\n",
+        fprintf(fp, " %.17g %.17g %.17g %.17g\n",
                 ss.grain.gv[k], ss.grain.gi[k][0], ss.grain.gi[k][1], ss.grain.gi[k][2]);
-        fprintf(fp, " %e %e %e\n", ss.grain.vgx[k], ss.grain.vgy[k], ss.grain.vgz[k]);
-        fprintf(fp, " %e %e %e\n", ss.grain.vgwx[k], ss.grain.vgwy[k], ss.grain.vgwz[k]);
-        fprintf(fp, " %e %e %e\n", ss.grain.gcx[k], ss.grain.gcy[k], ss.grain.gcz[k]);
-        fprintf(fp, " %e %e %e\n", ss.grain.gwx[k], ss.grain.gwy[k], ss.grain.gwz[k]);
+        fprintf(fp, " %.17g %.17g %.17g\n", ss.grain.vgx[k], ss.grain.vgy[k], ss.grain.vgz[k]);
+        fprintf(fp, " %.17g %.17g %.17g\n", ss.grain.vgwx[k], ss.grain.vgwy[k], ss.grain.vgwz[k]);
+        fprintf(fp, " %.17g %.17g %.17g\n", ss.grain.gcx[k], ss.grain.gcy[k], ss.grain.gcz[k]);
+        fprintf(fp, " %.17g %.17g %.17g\n", ss.grain.gwx[k], ss.grain.gwy[k], ss.grain.gwz[k]);
         for (int i = 0; i < ss.grain.nset[k]; i++) {
-            fprintf(fp, " %d %e\n", i+1, ss.elem.rc[icr]);
-            fprintf(fp, " %e %e %e\n", ss.elem.xc[icr], ss.elem.yc[icr], ss.elem.zc[icr]);
+            fprintf(fp, " %d %.17g\n", i+1, ss.elem.rc[icr]);
+            fprintf(fp, " %.17g %.17g %.17g\n", ss.elem.xc[icr], ss.elem.yc[icr], ss.elem.zc[icr]);
             icr++;
         }
     }
@@ -518,11 +523,11 @@ void write_new_in_bc(SimState &ss) {
         if (ss.bc.icode[gi][4] == 1) bv[4] *= ss.dtime * (double)ss.bc.nstep;
         if (ss.bc.icode[gi][5] == 1) bv[5] *= ss.dtime * (double)ss.bc.nstep;
 
-        fprintf(fp, " %7d %2d %14.7e %2d %14.7e %2d %14.7e\n",
+        fprintf(fp, " %7d %2d %.17g %2d %.17g %2d %.17g\n",
                 gi+1, ss.bc.icode[gi][0], bv[0],
                 ss.bc.icode[gi][1], bv[1],
                 ss.bc.icode[gi][2], bv[2]);
-        fprintf(fp, "   %2d %14.7e %2d %14.7e %2d %14.7e\n",
+        fprintf(fp, "   %2d %.17g %2d %.17g %2d %.17g\n",
                 ss.bc.icode[gi][3], bv[3],
                 ss.bc.icode[gi][4], bv[4],
                 ss.bc.icode[gi][5], bv[5]);
@@ -534,20 +539,28 @@ void write_new_in_bc(SimState &ss) {
     if (ss.pb.ic_pby == 1) vpby0 *= (double)ss.bc.nstep * ss.dtime;
     if (ss.pb.ic_pbz == 1) vpbz0 *= (double)ss.bc.nstep * ss.dtime;
 
-    fprintf(fp, " %6d %14.7e %14.7e %3d %14.7e %14.7e\n",
+    fprintf(fp, " %6d %.17g %.17g %3d %.17g %.17g\n",
             ss.pb.ipbx, ss.pb.pbcx - ss.pb.pblx/2.0, ss.pb.pbcx + ss.pb.pblx/2.0,
             ss.pb.ic_pbx, vpbx0, ss.pb.sig_pbx);
-    fprintf(fp, " %6d %14.7e %14.7e %3d %14.7e %14.7e\n",
+    fprintf(fp, " %6d %.17g %.17g %3d %.17g %.17g\n",
             ss.pb.ipby, ss.pb.pbcy - ss.pb.pbly/2.0, ss.pb.pbcy + ss.pb.pbly/2.0,
             ss.pb.ic_pby, vpby0, ss.pb.sig_pby);
-    fprintf(fp, " %6d %14.7e %14.7e %3d %14.7e %14.7e\n",
+    fprintf(fp, " %6d %.17g %.17g %3d %.17g %.17g\n",
             ss.pb.ipbz, ss.pb.pbcz - ss.pb.pblz/2.0, ss.pb.pbcz + ss.pb.pblz/2.0,
             ss.pb.ic_pbz, vpbz0, ss.pb.sig_pbz);
 
     // Tamping
-    fprintf(fp, " %10.3e %10.3e %10.3e %8d %8d %10.3e %10.3e\n",
+    // FIX 6: advance pret by the time simulated in this segment, so that a
+    // restart continues the tool's orbit and wobble at the correct phase.
+    // Previously the old pret was written back unchanged; after a segment that
+    // is not a whole number of vibration cycles, the restarted tool jumped in
+    // phase and its orbit centre shifted.  (The Fortran has the same issue.)
+    // Uses the step at which the file is written, so an intermediate snapshot
+    // (written every nprn1 steps) also restarts at the right phase.
+    double pret_next = ss.tamp.pret + ss.dtime * (double)ss.istep_cur;
+    fprintf(fp, " %.17g %.17g %.17g %8d %8d %.17g\n",
             ss.tamp.hz, ss.tamp.Amp, ss.tamp.Zkak,
-            ss.tamp.itl1a+1, ss.tamp.itl1b+1, ss.tamp.pret, ss.tamp.pret);
+            ss.tamp.itl1a+1, ss.tamp.itl1b+1, pret_next);
 
     fclose(fp);
 }
@@ -561,7 +574,7 @@ void write_new_in_cf(SimState &ss) {
     for (int i = 0; i < ss.elem.nelem; i++) {
         fprintf(fp, " %d %d\n", i+1, ss.cont.icount[i]);
         for (int j = 0; j < ss.cont.icount[i]; j++) {
-            fprintf(fp, "    %7d %14.7e %14.7e %14.7e\n",
+            fprintf(fp, "    %7d %.17g %.17g %.17g\n",
                     ss.cont.neib[i][j]+1,
                     ss.cont.fcont[i][j][0], ss.cont.fcont[i][j][1],
                     ss.cont.alpha[i][j]);
