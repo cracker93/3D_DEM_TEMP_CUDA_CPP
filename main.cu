@@ -6,6 +6,37 @@
 #include "dem3d.h"
 #include "gpu_data.h"
 
+// ------------------------------------------------------------------
+// Optional phase timing.  Build with  make TIMING=1  (adds -DDEM_TIMING=1).
+// Each phase is timed on the host after a device sync, so the numbers include
+// launch latency and any host work, which is what we want to find the
+// bottleneck.  The syncs cost a little, so keep this OFF for production runs.
+// ------------------------------------------------------------------
+#if DEM_TIMING
+#include <chrono>
+static double t_acc[8] = {0,0,0,0,0,0,0,0};
+static const char *t_name[8] = {"bval upload","bounds (D2H+CPU)","spatial hash",
+                                "contact forces","wall forces","integrate",
+                                "energy readback","output/IO"};
+static std::chrono::high_resolution_clock::time_point t_mark;
+#define TIC() do { cudaDeviceSynchronize(); t_mark = std::chrono::high_resolution_clock::now(); } while(0)
+#define TOC(i) do { cudaDeviceSynchronize(); \
+    t_acc[i] += std::chrono::duration<double,std::milli>( \
+        std::chrono::high_resolution_clock::now() - t_mark).count(); } while(0)
+#define TIMING_REPORT(nstep) do { \
+    double tot = 0; for (int i=0;i<8;i++) tot += t_acc[i]; \
+    printf("\n=== phase timing over %d steps ===\n", nstep); \
+    for (int i=0;i<8;i++) \
+        printf("  %-18s %9.2f ms total  %7.4f ms/step  %5.1f%%\n", \
+               t_name[i], t_acc[i], t_acc[i]/(nstep), 100.0*t_acc[i]/tot); \
+    printf("  %-18s %9.2f ms total  %7.4f ms/step\n", "TOTAL", tot, tot/(nstep)); \
+} while(0)
+#else
+#define TIC()
+#define TOC(i)
+#define TIMING_REPORT(nstep)
+#endif
+
 // FIX 4: SimState contains fixed-size arrays (NCC = 420000, NEIMAX = 30) and is
 // roughly 400 MB.  As a local variable it overflows the 8 MB default stack on
 // Linux and segfaults immediately.  'static' puts it in .bss instead.
@@ -157,6 +188,7 @@ int main(int argc, char **argv) {
         }
 
         // Upload bval to GPU
+        TIC();
         {
             double *bf = new double[NGR*6];
             memset(bf, 0, sizeof(double)*NGR*6);
@@ -164,8 +196,10 @@ int main(int argc, char **argv) {
             CUDA_CHECK(cudaMemcpy(gpu.d_bval, bf, sizeof(double)*NGR*6, cudaMemcpyHostToDevice));
             delete[] bf;
         }
+        TOC(0);
 
         // --- Compute domain bounds (CPU, fast) ---
+        TIC();
         CUDA_CHECK(cudaMemcpy(ss.elem.xc, gpu.d_xc, sizeof(double)*ne, cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(ss.elem.yc, gpu.d_yc, sizeof(double)*ne, cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(ss.elem.zc, gpu.d_zc, sizeof(double)*ne, cudaMemcpyDeviceToHost));
@@ -190,25 +224,34 @@ int main(int argc, char **argv) {
         ndx=fmax(1,ndx); ndy=fmax(1,ndy); ndz=fmax(1,ndz);
         double xd=bw/ndx, yd=bh/ndy, zd=bd/ndz;
         int tc = ndx*ndy*ndz;
+        TOC(1);
 
         // --- GPU: Spatial hash ---
+        TIC();
         launch_compute_cell_index(gpu, ne,
             ss.pb.ipbx,ss.pb.ipby,ss.pb.ipbz,
             ss.pb.pbcx,ss.pb.pbcy,ss.pb.pbcz,
             ss.pb.pblx,ss.pb.pbly,ss.pb.pblz,
             dxn,dyn,dzn, xd,yd,zd, ndx,ndy,ndz);
         launch_sort_and_find_bounds(gpu, ne, tc);
+        TOC(2);
 
         // --- GPU: Contact forces ---
+        TIC();
         double vr = (ss.pb.ipb3==1) ? ss.pb.pblx*ss.pb.pbly*ss.pb.pblz : ss.stress.vr_ini;
         launch_contact_forces(gpu, ss, ndx,ndy,ndz, dxn,dyn,dzn, xd,yd,zd, vr, istep);
+        TOC(3);
 
         // --- GPU: Wall forces ---
+        TIC();
         launch_wall_forces(gpu, ss);
+        TOC(4);
 
         // --- GPU: Time integration ---
+        TIC();
         launch_integrate(gpu, ss, istep);
         CUDA_CHECK(cudaDeviceSynchronize());
+        TOC(5);
 
         // FIX 3: the contact-buffer swap used to happen HERE, before the output
         // block, so download_from_gpu() read *_cur = the PREVIOUS step's list and
@@ -216,6 +259,7 @@ int main(int argc, char **argv) {
         // The swap now happens at the very end of the step (see below).
 
         // --- Contact-list diagnostics (FIX 2) ---
+        TIC();
         int cdiag_overflow = 0, cdiag_maxcnt = 0;
         fetch_contact_diag(gpu, cdiag_overflow, cdiag_maxcnt);
         if (cdiag_maxcnt > maxcnt_run) maxcnt_run = cdiag_maxcnt;
@@ -375,6 +419,9 @@ int main(int argc, char **argv) {
         if (ss.pb.ic_pbz==0) { ss.pb.vpbz -= (sig_h[8]-ss.pb.sig_pbz)/pb_m*ss.dtime; ss.pb.vpbz *= ss.adamp; }
         else ss.pb.sig_pbz = sig_h[8];
 
+        TOC(6);
+        TIC();
+
         // --- Output ---
         if (istep % ss.bc.nprn2 == 0 || istep == 1) {
             fprintf(f_energy, " %7d %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e\n",
@@ -457,6 +504,8 @@ int main(int argc, char **argv) {
             write_new_in_bc(ss);
         }
 
+        TOC(7);
+
         // --- Swap contact buffers (FIX 3: after all output) ---
         std::swap(gpu.d_neib_cur, gpu.d_neib_old);
         std::swap(gpu.d_fcont_cur, gpu.d_fcont_old);
@@ -469,6 +518,7 @@ int main(int argc, char **argv) {
     fclose(f_cont); fclose(f_cont2); fclose(f_fd); fclose(f_cont3);
     fclose(f_info);
 
+    TIMING_REPORT(ss.bc.nstep);
     printf("=== Simulation complete ===\n");
     printf("contact-list health: max contacts on one element = %d (NEIMAX = %d)\n",
            maxcnt_run, NEIMAX);

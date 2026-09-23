@@ -33,6 +33,22 @@ extern __global__ void kernel_wall_forces(
     const int*,double*,
     int,int,int, double,double,double, double,double,double,
     double*,double*,double,int);
+extern __global__ void kernel_reduce_grain_forces(          // FIX A1
+    const double*,const int*,
+    const double*,const double*,const double*,
+    const double*,const double*,const double*,
+    double*,int);
+extern __global__ void kernel_update_elements(              // FIX A2
+    const int*,const int*,
+    const double*,const double*,const double*,
+    const double*,const double*,const double*,
+    const double*,const double*,const double*,
+    const double*,const double*,const double*,
+    const double*,const double*,const double*,
+    double*,double*,double*,
+    double*,double*,double*,
+    double*,double*,double*,
+    int);
 extern __global__ void kernel_integrate_translation(
     const double*,const int*,const int*,
     double*,double*,double*, double*,double*,double*,
@@ -53,7 +69,8 @@ extern __global__ void kernel_integrate_rotation(
     const double*,const double*,const double*,
     const int*,const double*,
     const double*,const double*,const double*,const double*,
-    double,int,double*,double*,double*);
+    double,int,double*,double*,double*,
+    double*,double*,double*);
 
 static const int BLOCK = 256;
 
@@ -183,6 +200,17 @@ extern "C" void launch_integrate(GPUData &g, SimState &ss, int istep) {
     CUDA_CHECK(cudaMemcpy(g.d_enxf,&zero,8,cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g.d_enxd,&zero,8,cudaMemcpyHostToDevice));
 
+    // FIX A1: reduce element forces/moments into grains, one thread per element.
+    int ne = ss.elem.nelem;
+    int egrid = (ne+BLOCK-1)/BLOCK;
+    CUDA_CHECK(cudaMemset(g.d_grain_force, 0, sizeof(double)*ng*6));
+    kernel_reduce_grain_forces<<<egrid,BLOCK>>>(
+        g.d_pforce, g.d_np,
+        g.d_xc, g.d_yc, g.d_zc,
+        g.d_gcx, g.d_gcy, g.d_gcz,
+        g.d_grain_force, ne);
+    CUDA_CHECK(cudaGetLastError());
+
     kernel_integrate_translation<<<grid,BLOCK>>>(
         g.d_pforce,g.d_np,g.d_nm,
         g.d_gcx,g.d_gcy,g.d_gcz,
@@ -212,6 +240,21 @@ extern "C" void launch_integrate(GPUData &g, SimState &ss, int istep) {
         g.d_grain_force,
         g.d_gcx_prev,g.d_gcy_prev,g.d_gcz_prev,
         ss.dtime,ng,
-        g.d_envw,g.d_enxf,g.d_enxd);
+        g.d_envw,g.d_enxf,g.d_enxd,
+        g.d_rot_rrt,g.d_rot_rr2,g.d_rot_rr3);      // FIX A2
+    CUDA_CHECK(cudaGetLastError());
+
+    // FIX A2: element position/velocity update, one thread per element.
+    kernel_update_elements<<<egrid,BLOCK>>>(
+        g.d_np, g.d_grain_fixed,
+        g.d_rot_rrt, g.d_rot_rr2, g.d_rot_rr3,
+        g.d_gcx, g.d_gcy, g.d_gcz,
+        g.d_gcx_prev, g.d_gcy_prev, g.d_gcz_prev,
+        g.d_vgx, g.d_vgy, g.d_vgz,
+        g.d_vgwx, g.d_vgwy, g.d_vgwz,
+        g.d_xc, g.d_yc, g.d_zc,
+        g.d_vxc, g.d_vyc, g.d_vzc,
+        g.d_vwx, g.d_vwy, g.d_vwz,
+        ne);
     CUDA_CHECK(cudaGetLastError());
 }

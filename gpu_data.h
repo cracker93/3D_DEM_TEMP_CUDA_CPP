@@ -40,6 +40,10 @@ struct GPUData {
     int *d_ncont;
     double *d_grain_force;
     int *d_diag;              // [0]=NEIMAX overflow count, [1]=max contacts/element
+    // FIX A2: per-grain rotation matrices handed to kernel_update_elements,
+    // and a flag marking grains that never move (all 6 DOFs prescribed at 0).
+    double *d_rot_rrt, *d_rot_rr2, *d_rot_rr3;   // [9*NGR] each
+    int *d_grain_fixed;                          // [NGR]
     double *d_gcx_prev, *d_gcy_prev, *d_gcz_prev;
 };
 

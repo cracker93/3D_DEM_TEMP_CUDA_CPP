@@ -31,6 +31,11 @@ ifeq ($(FMAD),false)
   NVCCFLAGS += --fmad=false
 endif
 
+# Phase timing report (adds device syncs; diagnostic builds only).
+ifeq ($(TIMING),1)
+  NVCCFLAGS += -DDEM_TIMING=1
+endif
+
 SRCS = main.cu io.cpp gpu_memory.cu kernels_helpers.cu kernels_contact.cu \
        kernels_integrate.cu launch_kernels.cu
 OBJS = $(addsuffix .o,$(basename $(SRCS)))

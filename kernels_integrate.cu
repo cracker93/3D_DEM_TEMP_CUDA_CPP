@@ -36,6 +36,35 @@ void d_transp3(const double A[3][3], double B[3][3]) {
 }
 
 // ============================================================
+// FIX A1: per-ELEMENT reduction of contact forces/moments into grains.
+// One thread per element (57k) instead of one thread per grain: the wall grain
+// has 7410 sub-spheres and the tool 3015, so a single thread walking those
+// serially was ~40% of the whole step.
+// grain_force_out must be zeroed before this kernel runs.
+// ============================================================
+__global__
+void kernel_reduce_grain_forces(
+    const double *pforce, const int *np_arr,
+    const double *xc, const double *yc, const double *zc,
+    const double *gcx, const double *gcy, const double *gcz,
+    double *grain_force_out, int nelem)
+{
+    int ei = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ei >= nelem) return;
+    int k = np_arr[ei];
+
+    double fx = pforce[ei*6+0], fy = pforce[ei*6+1], fz = pforce[ei*6+2];
+    double abx = xc[ei]-gcx[k], aby = yc[ei]-gcy[k], abz = zc[ei]-gcz[k];
+
+    atomicAdd(&grain_force_out[k*6+0], fx);
+    atomicAdd(&grain_force_out[k*6+1], fy);
+    atomicAdd(&grain_force_out[k*6+2], fz);
+    atomicAdd(&grain_force_out[k*6+3], pforce[ei*6+3] - fy*abz + fz*aby);
+    atomicAdd(&grain_force_out[k*6+4], pforce[ei*6+4] - fz*abx + fx*abz);
+    atomicAdd(&grain_force_out[k*6+5], pforce[ei*6+5] - fx*aby + fy*abx);
+}
+
+// ============================================================
 // KERNEL: Integrate grain translations
 // ============================================================
 __global__
@@ -64,20 +93,14 @@ void kernel_integrate_translation(
     double rho_g = d_mat_rho[mat];
     double gmass = rho_g * gv[k];
 
-    // Accumulate forces from elements
-    double pftx=0, pfty=0, pftz=0, pftwx=0, pftwy=0, pftwz=0;
-    for (int j = 0; j < nsk; j++) {
-        int ei = es + j;
-        double abx = xc[ei]-gcx[k], aby = yc[ei]-gcy[k], abz = zc[ei]-gcz[k];
-        pftx += pforce[ei*6+0]; pfty += pforce[ei*6+1]; pftz += pforce[ei*6+2];
-        pftwx += pforce[ei*6+3] - pforce[ei*6+1]*abz + pforce[ei*6+2]*aby;
-        pftwy += pforce[ei*6+4] - pforce[ei*6+2]*abx + pforce[ei*6+0]*abz;
-        pftwz += pforce[ei*6+5] - pforce[ei*6+0]*aby + pforce[ei*6+1]*abx;
-    }
-
-    // Store total grain forces for output
-    grain_force_out[k*6+0]=pftx; grain_force_out[k*6+1]=pfty; grain_force_out[k*6+2]=pftz;
-    grain_force_out[k*6+3]=pftwx; grain_force_out[k*6+4]=pftwy; grain_force_out[k*6+5]=pftwz;
+    // FIX A1: totals already reduced by kernel_reduce_grain_forces.
+    double pftx  = grain_force_out[k*6+0];
+    double pfty  = grain_force_out[k*6+1];
+    double pftz  = grain_force_out[k*6+2];
+    double pftwx = grain_force_out[k*6+3];
+    double pftwy = grain_force_out[k*6+4];
+    double pftwz = grain_force_out[k*6+5];
+    (void)nsk;
 
     // Apply force BCs
     if (icode_flat[k*6+0]==0) pftx += bval_flat[k*6+0];
@@ -156,7 +179,8 @@ void kernel_integrate_rotation(
     const double *grain_force_out,
     const double *grain_gcx_prev, const double *grain_gcy_prev, const double *grain_gcz_prev,
     double dtime, int nptotl,
-    double *g_envw, double *g_enxf, double *g_enxd)
+    double *g_envw, double *g_enxf, double *g_enxd,
+    double *rot_rrt, double *rot_rr2, double *rot_rr3)   // FIX A2
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= nptotl) return;
@@ -270,37 +294,63 @@ void kernel_integrate_rotation(
     if (icode_flat[k*6+4]==1) atomicAdd(g_enxd, bval_flat[k*6+4]*pftwy0*dtime);
     if (icode_flat[k*6+5]==1) atomicAdd(g_enxd, bval_flat[k*6+5]*pftwz0*dtime);
 
-    // Update element positions
-    int nsk = nset[k];
-    double rrt2[3][3];
-    d_transp3(rr, rrt2); // rrt from R_t (already computed above as rrt)
-
-    // R_t+dt
+    // FIX A2: store this grain's three rotation matrices; the element update is
+    // done by kernel_update_elements, one thread per element.
     double rr3[3][3];
-    d_euler_matrix(alpl, betl, gaml, rr3);
-
-    double gcxp = grain_gcx_prev[k], gcyp = grain_gcy_prev[k], gczp = grain_gcz_prev[k];
-
-    for (int j = 0; j < nsk; j++) {
-        int ei = es + j;
-        // Branch in old frame
-        double al[3] = {xc[ei]-gcxp, yc[ei]-gcyp, zc[ei]-gczp};
-        double tmp1[3];
-        d_matvec3(rrt, al, tmp1); // to body frame
-
-        // al_t+dt/2 for velocity
-        double tmp2[3];
-        d_matvec3(rr2, tmp1, tmp2);
-        vxc_e[ei] = vgx[k] + vgwy[k]*tmp2[2] - vgwz[k]*tmp2[1];
-        vyc_e[ei] = vgy[k] + vgwz[k]*tmp2[0] - vgwx[k]*tmp2[2];
-        vzc_e[ei] = vgz[k] + vgwx[k]*tmp2[1] - vgwy[k]*tmp2[0];
-        vwx_e[ei] = vgwx[k]; vwy_e[ei] = vgwy[k]; vwz_e[ei] = vgwz[k];
-
-        // al_t+dt for position
-        double tmp3[3];
-        d_matvec3(rr3, tmp1, tmp3);
-        xc[ei] = gcx[k] + tmp3[0];
-        yc[ei] = gcy[k] + tmp3[1];
-        zc[ei] = gcz[k] + tmp3[2];
+    d_euler_matrix(alpl, betl, gaml, rr3);   // R at t+dt
+    for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) {
+        rot_rrt[k*9 + a*3 + b] = rrt[a][b];  // R(t)^T
+        rot_rr2[k*9 + a*3 + b] = rr2[a][b];  // R(t+dt/2)
+        rot_rr3[k*9 + a*3 + b] = rr3[a][b];  // R(t+dt)
     }
+}
+
+// ============================================================
+// FIX A2: per-ELEMENT position/velocity update, one thread per element.
+// Grains whose six DOFs are all velocity-prescribed at zero (the container
+// walls) never move, so their elements are skipped: exact, and it removes the
+// slowest thread (7410 sub-spheres).
+// ============================================================
+__global__
+void kernel_update_elements(
+    const int *np_arr, const int *grain_fixed,
+    const double *rot_rrt, const double *rot_rr2, const double *rot_rr3,
+    const double *gcx, const double *gcy, const double *gcz,
+    const double *grain_gcx_prev, const double *grain_gcy_prev, const double *grain_gcz_prev,
+    const double *vgx, const double *vgy, const double *vgz,
+    const double *vgwx, const double *vgwy, const double *vgwz,
+    double *xc, double *yc, double *zc,
+    double *vxc_e, double *vyc_e, double *vzc_e,
+    double *vwx_e, double *vwy_e, double *vwz_e,
+    int nelem)
+{
+    int ei = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ei >= nelem) return;
+    int k = np_arr[ei];
+    if (grain_fixed[k]) return;
+
+    double rrt[3][3], rr2[3][3], rr3[3][3];
+    for (int a = 0; a < 3; a++) for (int b = 0; b < 3; b++) {
+        rrt[a][b] = rot_rrt[k*9 + a*3 + b];
+        rr2[a][b] = rot_rr2[k*9 + a*3 + b];
+        rr3[a][b] = rot_rr3[k*9 + a*3 + b];
+    }
+
+    double al[3] = {xc[ei]-grain_gcx_prev[k], yc[ei]-grain_gcy_prev[k], zc[ei]-grain_gcz_prev[k]};
+    double tmp1[3];
+    d_matvec3(rrt, al, tmp1);            // to body frame
+
+    double tmp2[3];
+    d_matvec3(rr2, tmp1, tmp2);          // branch at t+dt/2, for velocity
+    double wx = vgwx[k], wy = vgwy[k], wz = vgwz[k];
+    vxc_e[ei] = vgx[k] + wy*tmp2[2] - wz*tmp2[1];
+    vyc_e[ei] = vgy[k] + wz*tmp2[0] - wx*tmp2[2];
+    vzc_e[ei] = vgz[k] + wx*tmp2[1] - wy*tmp2[0];
+    vwx_e[ei] = wx; vwy_e[ei] = wy; vwz_e[ei] = wz;
+
+    double tmp3[3];
+    d_matvec3(rr3, tmp1, tmp3);          // branch at t+dt, for position
+    xc[ei] = gcx[k] + tmp3[0];
+    yc[ei] = gcy[k] + tmp3[1];
+    zc[ei] = gcz[k] + tmp3[2];
 }

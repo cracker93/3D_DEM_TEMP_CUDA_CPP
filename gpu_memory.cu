@@ -23,6 +23,10 @@ void allocate_gpu(GPUData &g, int nelem, int nptotl) {
     ALLOC_D(g.d_icount_cur,int,nelem); ALLOC_D(g.d_icount_old,int,nelem);
     ALLOC_D(g.d_pforce,double,nelem*6);
     ALLOC_D(g.d_diag,int,2);
+    ALLOC_D(g.d_rot_rrt,double,nptotl*9);
+    ALLOC_D(g.d_rot_rr2,double,nptotl*9);
+    ALLOC_D(g.d_rot_rr3,double,nptotl*9);
+    ALLOC_D(g.d_grain_fixed,int,nptotl);
 
     ALLOC_D(g.d_cellIndex,int,nelem);
     ALLOC_D(g.d_particleIndex,int,nelem);
@@ -103,6 +107,23 @@ void upload_to_gpu(GPUData &g, SimState &ss) {
     CUDA_CHECK(cudaMemset(g.d_fcont_cur, 0, sizeof(double)*ne*NEIMAX*2));
     CUDA_CHECK(cudaMemset(g.d_alpha_cur, 0, sizeof(double)*ne*NEIMAX));
     CUDA_CHECK(cudaMemset(g.d_diag, 0, sizeof(int)*2));
+
+    // FIX A2: a grain is "fixed" when every DOF is velocity-prescribed at zero
+    // (the container walls).  Its sub-spheres never move, so the element update
+    // can skip them.  bval0 is used because the gradual-loading ramp scales it.
+    {
+        int *gf = new int[ng];
+        for (int k = 0; k < ng; k++) {
+            int fixed = 1;
+            for (int d = 0; d < 6; d++)
+                if (ss.bc.icode[k][d] != 1 || ss.bc.bval0[k][d] != 0.0) { fixed = 0; break; }
+            gf[k] = fixed;
+        }
+        int nfix = 0; for (int k = 0; k < ng; k++) nfix += gf[k];
+        printf("fixed grains (elements skipped in update): %d of %d\n", nfix, ng);
+        CUDA_CHECK(cudaMemcpy(g.d_grain_fixed, gf, sizeof(int)*ng, cudaMemcpyHostToDevice));
+        delete[] gf;
+    }
 
     if (ss.bc.icld != 0) {
         int *nf = new int[ne*NEIMAX]; double *ff = new double[ne*NEIMAX*2]; double *af = new double[ne*NEIMAX];
