@@ -39,6 +39,12 @@ void kernel_init_forces(double *pforce, int *icount, int nelem) {
 // One thread per element i, checks all 27 neighbor cells
 // Only processes pairs where j > i to avoid double counting
 // ============================================================
+// PERF: warp-level sum (all 32 lanes must call it)
+__device__ __forceinline__ double wsum(double v){
+    for (int o=16;o>0;o>>=1) v += __shfl_down_sync(0xffffffff,v,o);
+    return v;
+}
+
 __global__
 void kernel_contact_forces(
     const double *xc, const double *yc, const double *zc, const double *rc,
@@ -66,8 +72,12 @@ void kernel_contact_forces(
     double *g_enfr, double *g_enfr1, double *g_enfr2, double *g_enfr3,
     int *g_ncont, int *g_diag)
 {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= nelem) return;
+    // PERF: threads walk the spatially sorted order (neighbouring threads ->
+    // neighbouring elements).  No early return: every lane must reach wsum().
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    bool active = tid < nelem;
+    int i = active ? sortedIndex[tid] : 0;
+    double ls[9] = {0,0,0,0,0,0,0,0,0}; double lnc = 0.0;
 
     double xci = periodic_wrap(xc[i], pbcx, pblx, ipbx);
     double yci = periodic_wrap(yc[i], pbcy, pbly, ipby);
@@ -81,6 +91,7 @@ void kernel_contact_forces(
     double le_encn=0, le_encs=0, le_enct=0;
     double le_enfr=0, le_enfr1=0, le_enfr2=0, le_enfr3=0;
 
+    if (active)
     for (int di = -1; di <= 1; di++)
     for (int dj = -1; dj <= 1; dj++)
     for (int dk = -1; dk <= 1; dk++) {
@@ -106,6 +117,9 @@ void kernel_contact_forces(
             double ycj = periodic_wrap(yc[j], pbcy, pbly, ipby) + py;
             double zcj = periodic_wrap(zc[j], pbcz, pblz, ipbz) + pz;
 
+            // PERF: cheap reject without sqrt; identical to d_c_judge's test (dist < ri+rj)
+            { double ddx=xcj-xci, ddy=ycj-yci, ddz=zcj-zci, rr=rc[i]+rc[j];
+              if (ddx*ddx+ddy*ddy+ddz*ddz >= rr*rr) continue; }
             double anx, any, anz, ovrlap, cpx, cpy, cpz;
             d_c_judge(xci,yci,zci,rc[i], xcj,ycj,zcj,rc[j],
                       anx,any,anz,ovrlap,cpx,cpy,cpz);
@@ -202,36 +216,40 @@ void kernel_contact_forces(
 
             // Stress
             if (vr > 0.0) {
-                bool skip = false;
-                for (int p = 0; p < npboun; p++)
-                    if (np[i]==ipboun[p] || np[j]==ipboun[p]) { skip=true; break; }
+                // PERF: ipboun is now a per-grain flag array (see gpu_memory.cu)
+                bool skip = ipboun[np[i]] || ipboun[np[j]];
                 if (!skip) {
                     double gxi = gcx[np[i]]+xci-xc[i], gxj = gcx[np[j]]+xcj-xc[j];
                     double gyi = gcy[np[i]]+yci-yc[i], gyj = gcy[np[j]]+ycj-yc[j];
                     double gzi = gcz[np[i]]+zci-zc[i], gzj = gcz[np[j]]+zcj-zc[j];
                     double lx=gxj-gxi, ly=gyj-gyi, lz=gzj-gzi;
-                    atomicAdd(&sig_out[0], lx*fx/vr);
-                    atomicAdd(&sig_out[1], lx*fy/vr);
-                    atomicAdd(&sig_out[2], lx*fz/vr);
-                    atomicAdd(&sig_out[3], ly*fx/vr);
-                    atomicAdd(&sig_out[4], ly*fy/vr);
-                    atomicAdd(&sig_out[5], ly*fz/vr);
-                    atomicAdd(&sig_out[6], lz*fx/vr);
-                    atomicAdd(&sig_out[7], lz*fy/vr);
-                    atomicAdd(&sig_out[8], lz*fz/vr);
+                    ls[0]+=lx*fx/vr; ls[1]+=lx*fy/vr; ls[2]+=lx*fz/vr;
+                    ls[3]+=ly*fx/vr; ls[4]+=ly*fy/vr; ls[5]+=ly*fz/vr;
+                    ls[6]+=lz*fx/vr; ls[7]+=lz*fy/vr; ls[8]+=lz*fz/vr;
                 }
             }
-            atomicAdd(g_ncont, 1);
+            lnc += 1.0;
         }
     }
 
     // i's contact count already incremented per-contact above via atomicAdd
 
-    // Accumulate energies
-    atomicAdd(g_enkn, le_enkn); atomicAdd(g_enks, le_enks); atomicAdd(g_enkt, le_enkt);
-    atomicAdd(g_encn, le_encn); atomicAdd(g_encs, le_encs); atomicAdd(g_enct, le_enct);
-    atomicAdd(g_enfr, le_enfr);
-    atomicAdd(g_enfr1, le_enfr1); atomicAdd(g_enfr2, le_enfr2); atomicAdd(g_enfr3, le_enfr3);
+    // PERF: reduce energies, stress and contact count per warp, then one
+    // atomic per warp instead of one per thread / per contact.
+    double e[10] = {le_enkn,le_enks,le_enkt,le_encn,le_encs,le_enct,
+                    le_enfr,le_enfr1,le_enfr2,le_enfr3};
+    double *ge[10] = {g_enkn,g_enks,g_enkt,g_encn,g_encs,g_enct,
+                      g_enfr,g_enfr1,g_enfr2,g_enfr3};
+    #pragma unroll
+    for (int k=0;k<10;k++) e[k] = wsum(e[k]);
+    #pragma unroll
+    for (int k=0;k<9;k++)  ls[k] = wsum(ls[k]);
+    lnc = wsum(lnc);
+    if ((threadIdx.x & 31) == 0) {
+        for (int k=0;k<10;k++) atomicAdd(ge[k], e[k]);
+        if (vr > 0.0) for (int k=0;k<9;k++) atomicAdd(&sig_out[k], ls[k]);
+        atomicAdd(g_ncont, (int)(lnc + 0.5));
+    }
 }
 
 // ============================================================

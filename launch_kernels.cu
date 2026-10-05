@@ -121,21 +121,20 @@ extern "C" void launch_contact_forces(GPUData &g, SimState &ss,
     CUDA_CHECK(cudaGetLastError());
 
     // Zero energy accumulators for this step
-    double zero = 0.0; int izero = 0;
-    CUDA_CHECK(cudaMemcpy(g.d_enkn,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enks,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enkt,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_encn,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_encs,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enct,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enfr,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enfr1,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enfr2,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enfr3,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_ncont,&izero,4,cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMemsetAsync(g.d_enkn,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enks,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enkt,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_encn,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_encs,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enct,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enfr,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enfr1,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enfr2,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enfr3,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_ncont,0,4));
     CUDA_CHECK(cudaMemset(g.d_diag,0,sizeof(int)*2));   // overflow count, max count
-    double sig_zero[9] = {0};
-    CUDA_CHECK(cudaMemcpy(g.d_sig,sig_zero,72,cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemsetAsync(g.d_sig,0,72));
 
     kernel_contact_forces<<<grid,BLOCK>>>(
         g.d_xc,g.d_yc,g.d_zc,g.d_rc,
@@ -188,17 +187,17 @@ extern "C" void launch_integrate(GPUData &g, SimState &ss, int istep) {
     int ng = ss.grain.nptotl;
     int grid = (ng+BLOCK-1)/BLOCK;
 
-    double zero = 0.0;
-    CUDA_CHECK(cudaMemcpy(g.d_envx,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_envy,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_envz,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_envw,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_engr,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_encx,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_ency,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_encz,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enxf,&zero,8,cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(g.d_enxd,&zero,8,cudaMemcpyHostToDevice));
+
+    CUDA_CHECK(cudaMemsetAsync(g.d_envx,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_envy,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_envz,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_envw,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_engr,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_encx,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_ency,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_encz,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enxf,0,8));
+    CUDA_CHECK(cudaMemsetAsync(g.d_enxd,0,8));
 
     // FIX A1: reduce element forces/moments into grains, one thread per element.
     int ne = ss.elem.nelem;

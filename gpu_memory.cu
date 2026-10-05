@@ -93,7 +93,11 @@ void upload_to_gpu(GPUData &g, SimState &ss) {
     UP(g.d_icode,ic_flat,int,NGR*6); UP(g.d_bval,bv_flat,double,NGR*6);
     delete[] ic_flat; delete[] bv_flat;
 
-    UP(g.d_ipboun,ss.bc.ipboun,int,ss.bc.npboun);
+    // PERF: upload ipboun as a per-grain flag array (1 = boundary grain) so the
+    // contact kernel tests membership in O(1) instead of looping over npboun.
+    { int *flag = new int[NGR]();
+      for (int p=0;p<ss.bc.npboun;p++) flag[ss.bc.ipboun[p]] = 1;
+      UP(g.d_ipboun,flag,int,NGR); delete[] flag; }
 
     // FIX 1: cudaMalloc does NOT zero memory.  The Fortran sets ngbold = 0 and
     // cFs = 0 when icld = 0 at istep = 1, so the "old" contact buffers must be
