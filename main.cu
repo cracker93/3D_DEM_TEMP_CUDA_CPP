@@ -151,6 +151,33 @@ int main(int argc, char **argv) {
     fprintf(f_output, " %d %d\n", ng, ss.bc.nstep);
     for (int i = 0; i < ng; i++) fprintf(f_output, " %d %d %e\n", i+1, ss.grain.nset[i], ss.grain.gv[i]);
 
+    // --- Optional insertion depth stop (env DEM_TIP_STOP = tip z, mm) ---
+    // Force-controlled insertion until the lowest point of the tool reaches
+    // DEM_TIP_STOP, then the tool's vertical DOF is held (velocity 0) while the
+    // orbit/wobble continue.  Unset -> original behaviour.  The held state is
+    // written to new_in_bc.dat (icode=1, value 0), so restarts stay held.
+    double tip_stop = -1e30; bool tool_held = false; int tool_e0 = 0, tool_e1 = 0;
+    {
+        const char *ev = getenv("DEM_TIP_STOP");
+        if (ev && ss.tamp.itl1a >= 0) {
+            tip_stop = atof(ev);
+            for (int k = 0; k < ss.tamp.itl1a; k++) tool_e0 += ss.grain.nset[k];
+            tool_e1 = tool_e0;
+            for (int k = ss.tamp.itl1a; k <= ss.tamp.itl1b; k++) tool_e1 += ss.grain.nset[k];
+            if (ss.elem.np[tool_e0] != ss.tamp.itl1a || ss.elem.np[tool_e1-1] != ss.tamp.itl1b) {
+                fprintf(stderr, "DEPTH STOP: tool elements not contiguous, aborting\n");
+                exit(1);
+            }
+            tool_held = (ss.bc.icode[ss.tamp.itl1a][2] == 1);
+            double tip = 1e30;
+            for (int i = tool_e0; i < tool_e1; i++) tip = fmin(tip, ss.elem.zc[i]-ss.elem.rc[i]);
+            printf("DEPTH STOP: tip z = %.3f, stop at %.3f%s\n", tip, tip_stop,
+                   tool_held ? " (tool z already displacement-controlled: stop inactive)" : "");
+            if (!tool_held && tip <= tip_stop)
+                printf("DEPTH STOP warning: tip already below the stop; it will be held at its current depth\n");
+        }
+    }
+
     // ============================================================
     // [4] TIME STEPPING LOOP
     // ============================================================
@@ -169,6 +196,22 @@ int main(int argc, char **argv) {
             ss.bc.bval[it][4] = -2*pi*hz*Z*sin(2*pi*hz*ddtm);
             ss.bc.bval[it][5] = 0.0;
             for (int d = 0; d < 6; d++) ss.bc.bval0[it][d] = ss.bc.bval[it][d];
+        }
+
+        // --- Insertion depth stop (uses zc from the previous step) ---
+        if (!tool_held && tip_stop > -1e29) {
+            double tip = 1e30;
+            for (int i = tool_e0; i < tool_e1; i++) tip = fmin(tip, ss.elem.zc[i]-ss.elem.rc[i]);
+            if (tip <= tip_stop) {
+                tool_held = true;
+                for (int it = ss.tamp.itl1a; it <= ss.tamp.itl1b; it++) {
+                    ss.bc.icode[it][2] = 1; ss.bc.bval[it][2] = 0.0; ss.bc.bval0[it][2] = 0.0;
+                    int one = 1;
+                    CUDA_CHECK(cudaMemcpy(gpu.d_icode + it*6 + 2, &one, sizeof(int), cudaMemcpyHostToDevice));
+                }
+                printf("DEPTH STOP reached at step %d (t = %.4f s): tip z = %.3f -> tool z held\n",
+                       istep + ss.bc.iloop, ss.tamp.pret + ss.dtime*istep, tip);
+            }
         }
 
         // --- Update periodic boundaries ---
