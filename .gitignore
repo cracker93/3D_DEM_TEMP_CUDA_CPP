@@ -30,3 +30,7 @@ runs/
 # macOS AppleDouble metadata
 ._*
 .AppleDouble
+*.patch
+timing.log
+old_tests/
+runs_stop_tests/
